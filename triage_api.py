@@ -29,7 +29,8 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT, dept TEXT, role TEXT)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS triage_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, patient_name TEXT, age INTEGER, sex TEXT,
-        priority TEXT, zone INTEGER, score_details TEXT, staff_id TEXT, vitals_json TEXT, symptoms_json TEXT)''')
+        priority TEXT, zone INTEGER, score_details TEXT, staff_id TEXT, vitals_json TEXT, symptoms_json TEXT,
+        is_active INTEGER DEFAULT 1)''')
     cursor.execute('''CREATE TABLE IF NOT EXISTS notifications (
         id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, staff_id TEXT, message TEXT, is_read INTEGER DEFAULT 0)''')
     
@@ -154,6 +155,7 @@ class PatientData(BaseModel):
 
 class TriageResponse(BaseModel):
     priority: str; zone: int; color_code: str; reasoning: List[str]; detected_interactions: List[str]
+    next_steps: List[str] = []
 
 @app.on_event("startup")
 def startup():
@@ -275,6 +277,25 @@ def predict_triage(patient: PatientData):
     res_zone = zone_map[final_priority_idx]
     res_priority = priority_map[final_priority_idx]
 
+    # 4. Protocol Checklists (Next Steps)
+    next_steps = []
+    if res_zone == 1:
+        next_steps = ["🚀 Life-Saving Intervention", "🩸 Type & Cross (2 units)", "🏥 Immediate MD Evaluation", "📈 Continuous Cardiac Monitoring"]
+    elif res_zone == 2:
+        next_steps = ["🕒 Physician Review within 15m", "💉 Start Peripheral IV", "🧪 Stat Labs (CBC, Lytes, Trop)", "🩺 Re-evaluate vitals every 15m"]
+    
+    # Specific condition protocols
+    for reason in coupling_reasons:
+        if "Sepsis" in reason:
+            next_steps.extend(["💧 30mL/kg Fluid Bolus", "💊 Stat Antibiotics", "🧪 Draw Blood Cultures x2", "📊 Monitor Lactate"])
+        if "Stroke" in reason:
+            next_steps.extend(["🧠 Activate Code Stroke", "☢️ Stat CT Head (Non-contrast)", "🩸 Point of Care Glucose", "⏱ Last Known Well Time?"])
+        if "Cardiac" in reason:
+            next_steps.extend(["💓 Stat 12-Lead EKG", "🍬 Aspirin 324mg PO", "🧪 Serial Troponins", "🫁 Monitor SpO2 (>94%)"])
+
+    # Remove duplicates but keep order
+    next_steps = list(dict.fromkeys(next_steps))
+
     # Database Logging
     try:
         conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
@@ -295,8 +316,30 @@ def predict_triage(patient: PatientData):
         "zone": res_zone, 
         "color_code": color_map[res_zone], 
         "reasoning": coupling_reasons, 
-        "detected_interactions": detected_interactions
+        "detected_interactions": detected_interactions,
+        "next_steps": next_steps
     }
+
+@app.get("/census")
+def get_census():
+    """Returns patients currently in the system (active)."""
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute('''SELECT patient_name, zone, priority, timestamp, vitals_json FROM triage_logs 
+                      WHERE is_active = 1 
+                      ORDER BY zone ASC, timestamp DESC''')
+    rows = cursor.fetchall(); conn.close()
+    
+    census = {1: [], 2: [], 3: [], 4: [], 5: []}
+    for r in rows:
+        census[r[1]].append({"name": r[0], "priority": r[2], "time": r[3], "vitals": r[4]})
+    return census
+
+@app.post("/discharge/{name}")
+def discharge_patient(name: str):
+    conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
+    cursor.execute("UPDATE triage_logs SET is_active = 0 WHERE patient_name = ?", (name,))
+    conn.commit(); conn.close()
+    return {"status": "success", "message": f"Patient {name} discharged"}
 
 @app.get("/logs")
 def get_logs():
