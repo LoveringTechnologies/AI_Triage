@@ -45,11 +45,89 @@ def init_db():
 
 model_pipeline = None; symptoms_list = []; conditions_list = []
 
-HIGH_RISK_INTERACTIONS = {
-    ("Asthma", "Wheezing"): 1.5, ("Asthma", "Shortness of breath"): 2.0,
-    ("COPD", "Shortness of breath"): 2.0, ("Heart Disease", "Chest pain"): 2.5,
-    ("Type 2 Diabetes", "Confusion"): 2.0, ("Immunosuppression", "Fever"): 2.0
+# --- CLINICAL INTELLIGENCE LAYER: WEIGHTS & COUPLING ---
+CLINICAL_WEIGHTS = {
+    "symptoms": {
+        "Chest pain": 2.5, "Shortness of breath": 2.0, "Confusion": 2.5, 
+        "Limb numbness": 2.0, "Dizziness": 1.0, "Fever": 0.5, "Abdominal pain": 1.0
+    },
+    "conditions": {
+        "Heart Disease": 1.5, "COPD": 1.5, "Diabetes": 0.5, "Asthma": 1.0, "Cancer": 1.0
+    }
 }
+
+def apply_physiological_coupling(patient: "PatientData"):
+    """Expert system layer for physiological coupling and emergency patterns."""
+    boost = 0.0
+    reasoning = []
+    
+    # Sepsis Pattern: Fever + HR Spike + RR Spike + BP Drop
+    if patient.temperature_c > 38.5 and patient.heart_rate > 100 and patient.respiratory_rate > 22:
+        if patient.systolic_bp < 100:
+            boost += 3.0
+            reasoning.append("Sepsis Protocol Triggered (High HR/RR + Fever + Low BP)")
+        else:
+            boost += 1.5
+            reasoning.append("SIRS Criteria Met (High HR/RR + Fever)")
+
+    # Cardiac Pattern: Chest Pain + HR Spike or BP Abnormalities
+    if "Chest pain" in patient.symptoms:
+        if patient.heart_rate > 110 or patient.systolic_bp > 160 or patient.systolic_bp < 90:
+            boost += 2.5
+            reasoning.append("Acute Cardiac Event Suspected (Chest Pain + Vital Instability)")
+
+    # Respiratory Failure: Low SpO2 + High RR
+    if patient.spo2 < 92:
+        if patient.respiratory_rate > 26:
+            boost += 3.0
+            reasoning.append("Respiratory Failure Risk (Low SpO2 + Tachypnea)")
+        else:
+            boost += 1.5
+            reasoning.append("Hypoxia Detected")
+
+    # Fever/HR Coupling check (Clinical Context)
+    # Expected: 10bpm increase per 1°C. If HR is 130 and Temp is 37, that's more alarming than HR 130 and Temp 40.
+    temp_elevation = max(0, patient.temperature_c - 37.0)
+    expected_hr_increase = temp_elevation * 10
+    if patient.heart_rate > (100 + expected_hr_increase):
+        boost += 1.0
+        reasoning.append("Uncompensated Tachycardia (HR disproportionately high for temperature)")
+
+    # Stroke Protocol (FAST + Hypertension)
+    neuro_symptoms = ["Slurred speech", "Facial drooping", "Limb numbness", "Weakness", "Confusion", "Vision changes"]
+    has_neuro = any(s in patient.symptoms for s in neuro_symptoms)
+    if has_neuro:
+        if patient.systolic_bp > 180 or patient.diastolic_bp > 110:
+            boost += 3.0
+            reasoning.append("Stroke Alert (Neuro Symptoms + Hypertensive Crisis)")
+        elif patient.systolic_bp > 140:
+            boost += 2.0
+            reasoning.append("Possible CVA (Neuro Symptoms + Hypertension)")
+        else:
+            boost += 1.5
+            reasoning.append("Neurological Deficit Detected")
+
+    # Shock Index (SI) = HR / SBP
+    # Normal: 0.5-0.7. > 0.9 indicates shock potential. > 1.0 is critical.
+    if patient.systolic_bp > 0:
+        shock_index = patient.heart_rate / patient.systolic_bp
+        if shock_index > 1.0:
+            boost += 2.5
+            reasoning.append(f"Critical Shock Index ({shock_index:.2f}) - Hidden Hypoperfusion Risk")
+        elif shock_index > 0.9:
+            boost += 1.5
+            reasoning.append(f"Elevated Shock Index ({shock_index:.2f})")
+
+    # Hypoglycemia Protocol
+    if patient.blood_glucose < 70:
+        if patient.blood_glucose < 50:
+            boost += 3.0
+            reasoning.append(f"Critical Hypoglycemia ({patient.blood_glucose} mg/dL)")
+        else:
+            boost += 2.0
+            reasoning.append(f"Hypoglycemia ({patient.blood_glucose} mg/dL)")
+
+    return boost, reasoning
 
 class PatientData(BaseModel):
     name: str = "Anonymous"
@@ -67,16 +145,36 @@ class TriageResponse(BaseModel):
 def startup():
     global model_pipeline, symptoms_list, conditions_list
     init_db()
-    df = pd.read_csv('Model Training Data/ai_triage_balanced_dataset.csv')
+    # Use the new high-fidelity clinical dataset
+    df = pd.read_csv('Model Training Data/ai_triage_clinical_v2.csv')
     df['pre_existing_conditions'] = df['pre_existing_conditions'].fillna('None')
     df['combined_text'] = df['pre_existing_conditions'] + " " + df['symptoms']
     df['sex_encoded'] = df['sex'].map({'M': 0, 'F': 1})
-    df['target'] = df['triage_priority'].map({'Non-urgent': 0, 'Urgent': 1, 'Emergency': 2, 'Immediate': 3})
+    
+    # 5-Zone Target Mapping
+    target_map = {
+        'Zone 1 (Resuscitation)': 4,
+        'Zone 2 (Emergent)': 3,
+        'Zone 3 (Urgent)': 2,
+        'Zone 4 (Less-Urgent)': 1,
+        'Zone 5 (Non-Urgent)': 0
+    }
+    df['target'] = df['triage_priority'].map(target_map)
+    
     numeric_features = ['age', 'heart_rate', 'systolic_bp', 'diastolic_bp', 'respiratory_rate', 'spo2', 'temperature_c', 'blood_glucose', 'pain_score']
     X = df[numeric_features + ['sex_encoded', 'combined_text']]
     y = df['target']
-    preprocessor = ColumnTransformer([('num', 'passthrough', numeric_features + ['sex_encoded']),('text', TfidfVectorizer(max_features=500), 'combined_text')])
-    model_pipeline = Pipeline([('preprocessor', preprocessor),('classifier', RandomForestClassifier(n_estimators=100, random_state=42))])
+    
+    preprocessor = ColumnTransformer([
+        ('num', 'passthrough', numeric_features + ['sex_encoded']),
+        ('text', TfidfVectorizer(max_features=500), 'combined_text')
+    ])
+    
+    model_pipeline = Pipeline([
+        ('preprocessor', preprocessor),
+        ('classifier', RandomForestClassifier(n_estimators=100, random_state=42))
+    ])
+    
     model_pipeline.fit(X, y)
     symptoms_list = sorted(list(set(df['symptoms'].str.split(';').explode().unique())))
     conditions_list = sorted(list(set(df['pre_existing_conditions'].str.split(';').explode().unique())))
@@ -108,38 +206,83 @@ def get_notifications(staff_id: str):
 @app.post("/predict", response_model=TriageResponse)
 def predict_triage(patient: PatientData):
     if not model_pipeline: raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    # 1. Prepare ML Prediction
     sex_enc = 0 if patient.sex == 'M' else 1
     combined_text = f"{';'.join(patient.pre_existing_conditions)} {';'.join(patient.symptoms)} {patient.current_medications}"
-    input_df = pd.DataFrame([{'age': patient.age, 'heart_rate': patient.heart_rate, 'systolic_bp': patient.systolic_bp, 'diastolic_bp': patient.diastolic_bp, 'respiratory_rate': patient.respiratory_rate, 'spo2': patient.spo2, 'temperature_c': patient.temperature_c, 'blood_glucose': patient.blood_glucose, 'pain_score': patient.pain_score, 'sex_encoded': sex_enc, 'combined_text': combined_text}])
-    probs = model_pipeline.predict_proba(input_df)[0]
-    priority_idx = np.argmax(probs)
+    input_df = pd.DataFrame([{
+        'age': patient.age, 'heart_rate': patient.heart_rate, 'systolic_bp': patient.systolic_bp, 
+        'diastolic_bp': patient.diastolic_bp, 'respiratory_rate': patient.respiratory_rate, 
+        'spo2': patient.spo2, 'temperature_c': patient.temperature_c, 
+        'blood_glucose': patient.blood_glucose, 'pain_score': patient.pain_score, 
+        'sex_encoded': sex_enc, 'combined_text': combined_text
+    }])
     
-    weight_boost = patient.manual_boost
+    # ML predicted base level (0 to 4)
+    ml_priority_idx = model_pipeline.predict(input_df)[0]
+    
+    # 2. Apply Clinical Intelligence Overlay
+    clinical_boost = patient.manual_boost
     detected_interactions = []
-    if patient.manual_boost != 0: detected_interactions.append(f"Clinical Override: {patient.manual_boost:+}")
-    if patient.pain_location == "Head & Spine" and patient.pain_score >= 7:
-        weight_boost += 1.0; detected_interactions.append(f"Severe {patient.pain_location} Pain")
     
-    final_priority_idx = int(min(3, priority_idx + np.floor(weight_boost)))
-    zone_map = {3: 1, 2: 2, 1: 3, 0: 4}
-    priority_map = {3: 'Resuscitation', 2: 'Emergent', 1: 'Urgent', 0: 'Less-Urgent'}
+    # A. Static Weights
+    for sym in patient.symptoms:
+        if sym in CLINICAL_WEIGHTS["symptoms"]:
+            weight = CLINICAL_WEIGHTS["symptoms"][sym]
+            clinical_boost += weight
+            detected_interactions.append(f"High-Risk Symptom: {sym} (+{weight})")
+            
+    for cond in patient.pre_existing_conditions:
+        if cond in CLINICAL_WEIGHTS["conditions"]:
+            weight = CLINICAL_WEIGHTS["conditions"][cond]
+            clinical_boost += weight
+            detected_interactions.append(f"Condition Risk: {cond} (+{weight})")
+
+    # B. Physiological Coupling (The "Safety Floor")
+    coupling_boost, coupling_reasons = apply_physiological_coupling(patient)
+    clinical_boost += coupling_boost
+    detected_interactions.extend(coupling_reasons)
+    
+    # C. Anatomical Location Boost
+    if patient.pain_location in ["Head & Spine", "Chest", "Neck"] and patient.pain_score >= 7:
+        clinical_boost += 1.5
+        detected_interactions.append(f"Critical Anatomy: {patient.pain_location} Trauma")
+
+    # 3. Final Zone Calculation
+    # We round the boost. Every +1.0 boost shifts the zone up (closer to Zone 1).
+    final_score = ml_priority_idx + np.floor(clinical_boost)
+    final_priority_idx = int(max(0, min(4, final_score)))
+    
+    # Map index 4 -> Zone 1, 3 -> Zone 2, 2 -> Zone 3, 1 -> Zone 4, 0 -> Zone 5
+    zone_map = {4: 1, 3: 2, 2: 3, 1: 4, 0: 5}
+    priority_map = {4: 'Resuscitation', 3: 'Emergent', 2: 'Urgent', 1: 'Less-Urgent', 0: 'Non-Urgent'}
+    color_map = {1: 'red', 2: 'orange', 3: '#f1c40f', 4: 'blue', 5: 'green'}
+    
     res_zone = zone_map[final_priority_idx]
     res_priority = priority_map[final_priority_idx]
-    if final_priority_idx == 0 and patient.pain_score < 3:
-        res_zone = 5; res_priority = "Non-Urgent"
 
-    color_map = {1: 'red', 2: 'orange', 3: '#f1c40f', 4: 'blue', 5: 'green'}
-
+    # Database Logging
     try:
         conn = sqlite3.connect(DB_PATH); cursor = conn.cursor()
-        vitals_data = f"HR:{patient.heart_rate}, BP:{patient.systolic_bp}/{patient.diastolic_bp}"
-        cursor.execute('''INSERT INTO triage_logs (timestamp, patient_name, age, sex, priority, zone, score_details, staff_id, vitals_json, symptoms_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (datetime.now().isoformat(), patient.name, patient.age, patient.sex, res_priority, res_zone, ", ".join(detected_interactions), patient.staff_id, vitals_data, ";".join(patient.symptoms)))
-        msg = f"Patient {patient.name} assigned Zone {res_zone}"
-        cursor.execute("INSERT INTO notifications (timestamp, message) VALUES (?, ?)", (datetime.now().isoformat(), msg))
+        vitals_data = f"HR:{patient.heart_rate}, BP:{patient.systolic_bp}/{patient.diastolic_bp}, SpO2:{patient.spo2}"
+        cursor.execute('''INSERT INTO triage_logs (timestamp, patient_name, age, sex, priority, zone, score_details, staff_id, vitals_json, symptoms_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                       (datetime.now().isoformat(), patient.name, patient.age, patient.sex, res_priority, res_zone, ", ".join(detected_interactions), patient.staff_id, vitals_data, ";".join(patient.symptoms)))
+        
+        # High-priority notification
+        if res_zone <= 2:
+            msg = f"ALERT: Patient {patient.name} assigned to {res_priority} (Zone {res_zone})"
+            cursor.execute("INSERT INTO notifications (timestamp, message) VALUES (?, ?)", (datetime.now().isoformat(), msg))
+            
         conn.commit(); conn.close()
     except Exception as e: print(f"DB Error: {e}")
 
-    return {"priority": res_priority, "zone": res_zone, "color_code": color_map[res_zone], "reasoning": [], "detected_interactions": detected_interactions}
+    return {
+        "priority": res_priority, 
+        "zone": res_zone, 
+        "color_code": color_map[res_zone], 
+        "reasoning": coupling_reasons, 
+        "detected_interactions": detected_interactions
+    }
 
 @app.get("/logs")
 def get_logs():
