@@ -61,35 +61,49 @@ def apply_physiological_coupling(patient: "PatientData"):
     boost = 0.0
     reasoning = []
     
+    # --- AGE-STRATIFIED THRESHOLDS (CTAS vs PaedCTAS) ---
+    is_teen = patient.age < 18
+    
+    # Thresholds: [Normal_Upper, Critical_Upper, Hypotension_Lower]
+    if is_teen:
+        # Paediatric Teen (12-18) Modifiers
+        hr_thresh = 100; hr_crit = 120
+        rr_thresh = 20; rr_crit = 30
+        sbp_hypo = 90
+    else:
+        # Adult (18+) Modifiers
+        hr_thresh = 100; hr_crit = 130
+        rr_thresh = 20; rr_crit = 26
+        sbp_hypo = 90
+
     # Sepsis Pattern: Fever + HR Spike + RR Spike + BP Drop
-    if patient.temperature_c > 38.5 and patient.heart_rate > 100 and patient.respiratory_rate > 22:
-        if patient.systolic_bp < 100:
+    if patient.temperature_c > 38.5 and patient.heart_rate > hr_thresh and patient.respiratory_rate > rr_thresh:
+        if patient.systolic_bp < sbp_hypo:
             boost += 3.0
-            reasoning.append("Sepsis Protocol Triggered (High HR/RR + Fever + Low BP)")
+            reasoning.append(f"Sepsis Protocol Triggered ({'Paed' if is_teen else 'Adult'})")
         else:
             boost += 1.5
             reasoning.append("SIRS Criteria Met (High HR/RR + Fever)")
 
     # Cardiac Pattern: Chest Pain + HR Spike or BP Abnormalities
     if "Chest pain" in patient.symptoms:
-        if patient.heart_rate > 110 or patient.systolic_bp > 160 or patient.systolic_bp < 90:
+        if patient.heart_rate > hr_crit or patient.systolic_bp > 160 or patient.systolic_bp < sbp_hypo:
             boost += 2.5
             reasoning.append("Acute Cardiac Event Suspected (Chest Pain + Vital Instability)")
 
     # Respiratory Failure: Low SpO2 + High RR
     if patient.spo2 < 92:
-        if patient.respiratory_rate > 26:
+        if patient.respiratory_rate > rr_crit:
             boost += 3.0
-            reasoning.append("Respiratory Failure Risk (Low SpO2 + Tachypnea)")
+            reasoning.append(f"Respiratory Failure Risk ({'Paed' if is_teen else 'Adult'})")
         else:
             boost += 1.5
             reasoning.append("Hypoxia Detected")
 
     # Fever/HR Coupling check (Clinical Context)
-    # Expected: 10bpm increase per 1°C. If HR is 130 and Temp is 37, that's more alarming than HR 130 and Temp 40.
     temp_elevation = max(0, patient.temperature_c - 37.0)
     expected_hr_increase = temp_elevation * 10
-    if patient.heart_rate > (100 + expected_hr_increase):
+    if patient.heart_rate > (hr_thresh + expected_hr_increase):
         boost += 1.0
         reasoning.append("Uncompensated Tachycardia (HR disproportionately high for temperature)")
 

@@ -14,14 +14,25 @@ def generate_realistic_data(n_samples=50000):
 
     for _ in range(n_samples):
         # Baseline Vitals
-        age = np.random.randint(1, 95)
+        age = np.random.randint(12, 95) # Focusing on 12+ for this model update
         sex = np.random.choice(['M', 'F'])
         
-        # Normal ranges (mostly)
-        hr = np.random.normal(75, 10)
-        sbp = np.random.normal(120, 15)
+        # Age-stratified Baseline ranges
+        if age < 18:
+            # Teen ranges (12-18)
+            hr_base, hr_std = 80, 12
+            sbp_base, sbp_std = 115, 10
+            rr_base, rr_std = 16, 2
+        else:
+            # Adult ranges (18+)
+            hr_base, hr_std = 72, 10
+            sbp_base, sbp_std = 122, 15
+            rr_base, rr_std = 14, 2
+
+        hr = np.random.normal(hr_base, hr_std)
+        sbp = np.random.normal(sbp_base, sbp_std)
         dbp = np.random.normal(80, 10)
-        rr = np.random.normal(16, 3)
+        rr = np.random.normal(rr_base, rr_std)
         spo2 = np.random.normal(98, 1.5)
         temp = np.random.normal(36.6, 0.4)
         glucose = np.random.normal(95, 15)
