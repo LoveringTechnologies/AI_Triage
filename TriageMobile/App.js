@@ -193,7 +193,7 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const API_BASE = 'http://192.168.4.42:8000'; 
+  const API_BASE = 'http://67.58.209.30:8591'; 
 
   // Polling for notifications
   useEffect(() => {
