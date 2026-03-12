@@ -71,7 +71,7 @@ The backend requires Python 3.9+ and the following libraries:
 ### 2. Environment Setup
 ```bash
 python -m venv "AI Triage System"
-".\AI Triage System\Scripts\pip" install pandas numpy scikit-learn fastapi uvicorn pydantic
+& ".\AI Triage System\Scripts\pip" install pandas numpy scikit-learn fastapi uvicorn pydantic
 ```
 
 ### 3. Generate Training Data
