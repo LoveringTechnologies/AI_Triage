@@ -90,6 +90,30 @@ cd TriageMobile
 npm install
 npx expo start
 ```
+## Experience Breakdown
+
+### User-Patient facing experience.
+
+The AI Triage app is intended to speed up the process of doing medical triage. 
+
+For the patient interaction, users input basic information such as patient name, symptoms, prior conditions, medicine, sex. Users are then assigned an urgency level, which correlates to your priority in the queue to see a nurse for triage. 
+
+### User-Nurse experience.
+
+For nurses using the app, there is more depth within the app, as they can input vital assessment info into the app, this will then update the triage info.
+
+This will update the users zone and priority, so that the hospital treats patients based on a fair assessment of their needs. 
+
+The AI will assist the medical practitioner move a patient more quickly through triage to see a doctor, it will not make final decisions on the patient’s health
+
+### User-Doctor Experience 
+
+Doctors’ will get a highly summarized verson of the information that the patiens and nurses have filled out on the app. This information is based on the patients inital symptoms and the nurses assessments. This will give the ai critical information which will be relayed to the doctor to make a final decision on the patients health.
+
+This will lead to a more efficient and diagnosticso that doctors can make a   
+
+
+### ** It is noteworthy that since all three parties (Doctors, Nurses, and Patients) have diffrent roles and requierments, their experience and user flows differ in the information presented and the depth.
 
 ---
 
