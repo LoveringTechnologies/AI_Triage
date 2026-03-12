@@ -81,7 +81,7 @@ python -m venv "AI Triage System"
 
 ### 4. Start the API
 ```bash
-& ".\AI Triage System\Scripts\python" -m uvicorn triage_api:app --host 0.0.0.0 --port 8000
+& ".\AI Triage System\Scripts\python" -m uvicorn triage_api:app --host 0.0.0.0 --port 8591
 ```
 
 ### 5. Launch Mobile App (Expo)
